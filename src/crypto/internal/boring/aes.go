@@ -24,6 +24,9 @@ int EVP_AEAD_CTX_seal_wrapper(const GO_EVP_AEAD_CTX *ctx, uint8_t *out,
 	size_t out_len;
 	int ok = _goboringcrypto_EVP_AEAD_CTX_seal(ctx, out, &out_len, exp_out_len,
 		nonce, nonce_len, in, in_len, ad, ad_len);
+	if (ok == 0) {
+		_goboringcrypto_ERR_print_errors_fp(stderr);
+	}
 	if (out_len != exp_out_len) {
 		return 0;
 	}

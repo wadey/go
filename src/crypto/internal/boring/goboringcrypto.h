@@ -18,6 +18,7 @@
 
 #include <stdlib.h> // size_t
 #include <stdint.h> // uint8_t
+#include <stdio.h>  // stderr FILE
 
 // This symbol is hidden in BoringCrypto and marked as a constructor,
 // but cmd/link's internal linking mode doesn't handle constructors.
@@ -32,6 +33,9 @@ void* _goboringcrypto_OPENSSL_malloc(size_t);
 
 // #include <openssl/rand.h>
 int _goboringcrypto_RAND_bytes(uint8_t*, size_t);
+
+// #include <openssl/err.h>
+void _goboringcrypto_ERR_print_errors_fp(FILE *fp);
 
 // #include <openssl/nid.h>
 enum {
