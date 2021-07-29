@@ -2,41 +2,65 @@
 # Use of this source code is governed by a BSD-style
 # license that can be found in the LICENSE file.
 
-# This Docker image builds goboringcrypto_linux_amd64.syso according to the
+# This Docker image builds goboringcrypto_linux_${ARCH}.syso according to the
 # Security Policy. To use it, build the image, run it, and then extract
-# /boring/godriver/goboringcrypto_linux_amd64.syso.
+# /boring/godriver/goboringcrypto_linux_${ARCH}.syso.
 #
-#   $ docker build -t goboring:140sp3678 .
-#   $ docker run -it --name goboring-140sp3678 goboring:140sp3678
-#   $ docker cp goboring-140sp3678:/boring/godriver/goboringcrypto_linux_amd64.syso .
-#   $ sha256sum goboringcrypto_linux_amd64.syso # compare to docker output
+#   $ ARCH=..... # (arm64 or amd64)
+#   $ docker build --platform linux/${ARCH} --progress plain --tag boring-${ARCH}:dev
+#   $ id=$(docker create boring-${ARCH}:dev)
+#   $ docker cp ${id}:/boring/godriver/goboringcrypto_linux_${ARCH}.syso .
+#   $ docker rm ${id}
+#   $ sha256sum goboringcrypto_linux_${ARCH}.syso # compare to docker output
 
 FROM ubuntu:focal
+
+ENV LANG=C
+ENV LANGUAGE=
 
 RUN mkdir /boring
 WORKDIR /boring
 
+# !! Needs updated module & policy !!
 # Following 140sp3678.pdf [0] page 19, install clang 7.0.1, Go 1.12.7, and
 # Ninja 1.9.0, then download and verify BoringSSL.
 #
 # [0]: https://csrc.nist.gov/CSRC/media/projects/cryptographic-module-validation-program/documents/security-policies/140sp3678.pdf
+# !! Needs updated module & policy !!
 
-RUN apt-get update && \
-        apt-get install --no-install-recommends -y cmake xz-utils wget unzip ca-certificates clang-7
-RUN wget https://github.com/ninja-build/ninja/releases/download/v1.9.0/ninja-linux.zip && \
-        unzip ninja-linux.zip && \
-        rm ninja-linux.zip && \
-        mv ninja /usr/local/bin/
-RUN wget https://golang.org/dl/go1.12.7.linux-amd64.tar.gz && \
-        tar -C /usr/local -xzf go1.12.7.linux-amd64.tar.gz && \
-        rm go1.12.7.linux-amd64.tar.gz && \
-        ln -s /usr/local/go/bin/go /usr/local/bin/
+ARG TARGETARCH
+ENV ARCH=${TARGETARCH}
 
-RUN wget https://commondatastorage.googleapis.com/chromium-boringssl-fips/boringssl-ae223d6138807a13006342edfeef32e813246b39.tar.xz
-RUN [ "$(sha256sum boringssl-ae223d6138807a13006342edfeef32e813246b39.tar.xz | awk '{print $1}')" = \
-        3b5fdf23274d4179c2077b5e8fa625d9debd7a390aac1d165b7e47234f648bb8 ]
+RUN apt-get update && apt-get -y upgrade
 
-ADD goboringcrypto.h /boring/godriver/goboringcrypto.h
-ADD build.sh /boring/build.sh
+ENV APT_INSTALL="apt-get --no-install-recommends -y install"
+RUN ${APT_INSTALL} cmake xz-utils wget unzip ca-certificates ninja-build patch
 
-ENTRYPOINT ["/boring/build.sh"]
+ARG GOLANG_VER=1.16
+RUN ${APT_INSTALL} golang-${GOLANG_VER}
+
+ARG CLANG_VER=11
+RUN ${APT_INSTALL} clang-${CLANG_VER}
+
+RUN wget -nv https://commondatastorage.googleapis.com/chromium-boringssl-fips/boringssl-853ca1ea1168dff08011e5d42d94609cc0ca2e27.tar.xz
+RUN [ "$(sha256sum boringssl-853ca1ea1168dff08011e5d42d94609cc0ca2e27.tar.xz | awk '{print $1}')" = \
+        a4d069ccef6f3c7bc0c68de82b91414f05cb817494cd1ab483dcf3368883c7c2 ]
+
+ENV PATH=${PATH}:/usr/lib/go-${GOLANG_VER}/bin/
+
+ENV CC="/usr/bin/clang-${CLANG_VER}"
+ENV CXX="/usr/bin/clang++-${CLANG_VER}"
+
+ENV CFLAGS="-fPIC"
+ENV CXXFLAGS="-fPIC"
+
+ADD patch patch
+ADD scripts/build.sh scripts/build.sh
+RUN scripts/build.sh
+
+ADD scripts/test.sh scripts/test.sh
+RUN scripts/test.sh
+
+ADD goboringcrypto.h godriver/goboringcrypto.h
+ADD scripts/package.sh scripts/package.sh
+RUN scripts/package.sh

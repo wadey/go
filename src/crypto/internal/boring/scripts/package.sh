@@ -3,39 +3,12 @@
 # Use of this source code is governed by a BSD-style
 # license that can be found in the LICENSE file.
 
+set -x
 set -e
-id
-date
-export LANG=C
-unset LANGUAGE
+set -u
+set -o pipefail
 
-# Build BoringCrypto libcrypto.a.
-# Following https://csrc.nist.gov/CSRC/media/projects/cryptographic-module-validation-program/documents/security-policies/140sp3678.pdf page 19.
-
-tar xJf boringssl-*z
-
-# Go requires -fPIC for linux/amd64 cgo builds.
-# Setting -fPIC only affects the compilation of the non-module code in libcrypto.a,
-# because the FIPS module itself is already built with -fPIC.
-echo '#!/bin/bash
-exec clang-7 -fPIC "$@"
-' >/usr/local/bin/clang
-echo '#!/bin/bash
-exec clang++-7 -fPIC "$@"
-' >/usr/local/bin/clang++
-chmod +x /usr/local/bin/clang /usr/local/bin/clang++
-
-# The BoringSSL tests use Go, and cgo would look for gcc.
-export CGO_ENABLED=0
-
-# Verbatim instructions from BoringCrypto build docs.
-printf "set(CMAKE_C_COMPILER \"clang\")\nset(CMAKE_CXX_COMPILER \"clang++\")\n" >${HOME}/toolchain
-cd boringssl
-mkdir build && cd build && cmake -GNinja -DCMAKE_TOOLCHAIN_FILE=${HOME}/toolchain -DFIPS=1 -DCMAKE_BUILD_TYPE=Release ..
-ninja
-ninja run_tests
-
-cd ../..
+ARCH=${ARCH:-amd64}
 
 if [ "$(./boringssl/build/tool/bssl isfips)" != 1 ]; then
 	echo "NOT FIPS"
@@ -44,8 +17,7 @@ fi
 
 # Build and run test C++ program to make sure goboringcrypto.h matches openssl/*.h.
 # Also collect list of checked symbols in syms.txt
-set -x
-set -e
+
 cd godriver
 cat >goboringcrypto.cc <<'EOF'
 #include <cassert>
@@ -131,7 +103,7 @@ cat goboringcrypto.h | awk '
 	/typedef struct|enum ([a-z_]+ )?{|^[ \t]/ {print;next}
 	{gsub(/GO_/, ""); gsub(/enum go_/, "enum "); print}
 ' >goboringcrypto1.h
-clang++ -std=c++11 -fPIC -I../boringssl/include -O2 -o a.out  goboringcrypto.cc
+${CXX:-clang++} -std=c++11 -fPIC -I../boringssl/include -O2 -o a.out  goboringcrypto.cc
 ./a.out || exit 2
 
 # Prepare copy of libcrypto.a with only the checked functions renamed and exported.
@@ -141,11 +113,11 @@ awk '{print "_goboringcrypto_" $0 }' syms.txt >globals.txt
 awk '{print $0 " _goboringcrypto_" $0 }' syms.txt >renames.txt
 objcopy --globalize-symbol=BORINGSSL_bcm_power_on_self_test ../boringssl/build/crypto/libcrypto.a libcrypto.a
 
-ld -r -nostdlib --whole-archive -o goboringcrypto.o libcrypto.a
+ld -r --whole-archive -o goboringcrypto.o libcrypto.a
 objcopy --remove-section=.llvm_addrsig goboringcrypto.o goboringcrypto1.o # b/179161016
 objcopy --redefine-syms=renames.txt goboringcrypto1.o goboringcrypto2.o
-objcopy --keep-global-symbols=globals.txt goboringcrypto2.o goboringcrypto_linux_amd64.syso
+objcopy --keep-global-symbols=globals.txt goboringcrypto2.o goboringcrypto_linux_${ARCH}.syso
 
 # Done!
-ls -l goboringcrypto_linux_amd64.syso
-sha256sum goboringcrypto_linux_amd64.syso
+ls -l goboringcrypto_linux_${ARCH}.syso
+sha256sum goboringcrypto_linux_${ARCH}.syso
