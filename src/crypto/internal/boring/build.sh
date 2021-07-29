@@ -141,52 +141,7 @@ awk '{print "_goboringcrypto_" $0 }' syms.txt >globals.txt
 awk '{print $0 " _goboringcrypto_" $0 }' syms.txt >renames.txt
 objcopy --globalize-symbol=BORINGSSL_bcm_power_on_self_test ../boringssl/build/crypto/libcrypto.a libcrypto.a
 
-# clang implements u128 % u128 -> u128 by calling __umodti3,
-# which is in libgcc. To make the result self-contained even if linking
-# against a different compiler version, link our own __umodti3 into the syso.
-# This one is specialized so it only expects divisors below 2^64,
-# which is all BoringCrypto uses. (Otherwise it will seg fault.)
-cat >umod.s <<'EOF'
-# tu_int __umodti3(tu_int x, tu_int y)
-# x is rsi:rdi, y is rcx:rdx, return result is rdx:rax.
-.globl __umodti3
-__umodti3:
-	# specialized to u128 % u64, so verify that
-	test %rcx,%rcx
-	jne 1f
-
-	# save divisor
-	movq %rdx, %r8
-
-	# reduce top 64 bits mod divisor
-	movq %rsi, %rax
-	xorl %edx, %edx
-	divq %r8
-
-	# reduce full 128-bit mod divisor
-	# quotient fits in 64 bits because top 64 bits have been reduced < divisor.
-	# (even though we only care about the remainder, divq also computes
-	# the quotient, and it will trap if the quotient is too large.)
-	movq %rdi, %rax
-	divq %r8
-
-	# expand remainder to 128 for return
-	movq %rdx, %rax
-	xorl %edx, %edx
-	ret
-
-1:
-	# crash - only want 64-bit divisor
-	xorl %ecx, %ecx
-	movl %ecx, 0(%ecx)
-	jmp 1b
-
-.section .note.GNU-stack,"",@progbits
-EOF
-clang -c -o umod.o umod.s
-
-ld -r -nostdlib --whole-archive -o goboringcrypto.o libcrypto.a umod.o
-echo __umodti3 _goboringcrypto___umodti3 >>renames.txt
+ld -r -nostdlib --whole-archive -o goboringcrypto.o libcrypto.a
 objcopy --remove-section=.llvm_addrsig goboringcrypto.o goboringcrypto1.o # b/179161016
 objcopy --redefine-syms=renames.txt goboringcrypto1.o goboringcrypto2.o
 objcopy --keep-global-symbols=globals.txt goboringcrypto2.o goboringcrypto_linux_amd64.syso
