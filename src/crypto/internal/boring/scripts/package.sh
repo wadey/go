@@ -113,7 +113,16 @@ awk '{print "_goboringcrypto_" $0 }' syms.txt >globals.txt
 awk '{print $0 " _goboringcrypto_" $0 }' syms.txt >renames.txt
 objcopy --globalize-symbol=BORINGSSL_bcm_power_on_self_test ../boringssl/build/crypto/libcrypto.a libcrypto.a
 
-ld -r --whole-archive -o goboringcrypto.o libcrypto.a
+# # attempt alternative to patching mem.c, by defining and linking in weak symbols
+# # these cause SIGSEGV in func__goboringcrypto_BORINGSSL_bcm_power_on_self_test
+# objdump -t libcrypto.a | grep ' w ' | awk '{print $5}' | tee weak.txt
+# echo '#include <openssl/mem.h>' >weak.c
+# echo '#define WEAK_SYMBOL_FUNC(rettype, name, args) rettype(*name) args = NULL;' >>weak.c
+# grep -r -h -E '^WEAK_SYMBOL_FUNC' ../boringssl >>weak.c
+# ${CC:-clang} -c -I../boringssl/include -o weak.o weak.c
+# objdump -t weak.o
+
+ld -r --whole-archive -o goboringcrypto.o libcrypto.a # weak.o
 objcopy --remove-section=.llvm_addrsig goboringcrypto.o goboringcrypto1.o # b/179161016
 objcopy --redefine-syms=renames.txt goboringcrypto1.o goboringcrypto2.o
 objcopy --keep-global-symbols=globals.txt goboringcrypto2.o goboringcrypto_linux_${ARCH}.syso
