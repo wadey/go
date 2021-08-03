@@ -34,7 +34,7 @@ ENV ARCH=${TARGETARCH}
 RUN apt-get update && apt-get -y upgrade
 
 ENV APT_INSTALL="apt-get --no-install-recommends -y install"
-RUN ${APT_INSTALL} cmake xz-utils wget unzip ca-certificates ninja-build patch
+RUN ${APT_INSTALL} cmake xz-utils wget unzip ca-certificates ninja-build
 
 ARG GOLANG_VER=1.16
 RUN ${APT_INSTALL} golang-${GOLANG_VER}
@@ -51,10 +51,13 @@ ENV PATH=${PATH}:/usr/lib/go-${GOLANG_VER}/bin/
 ENV CC="/usr/bin/clang-${CLANG_VER}"
 ENV CXX="/usr/bin/clang++-${CLANG_VER}"
 
-ENV CFLAGS="-fPIC"
-ENV CXXFLAGS="-fPIC"
+# Go requires -fPIC for linux/amd64 cgo builds.
+# Setting -fPIC only affects the compilation of the non-module code in libcrypto.a,
+# because the FIPS module itself is already built with -fPIC.
+# Undefine __ELF__ for boringssl/crypto/mem.c, avoid weak symbols for go use.
+ENV CFLAGS="-fPIC -U__ELF__"
+ENV CXXFLAGS="${CFLAGS}"
 
-ADD patch patch
 ADD scripts/build.sh scripts/build.sh
 RUN scripts/build.sh
 

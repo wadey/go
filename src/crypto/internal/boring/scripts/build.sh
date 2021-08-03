@@ -19,7 +19,6 @@ date
 tar xJf boringssl-*z
 
 cd boringssl
-cat ../patch/* | patch -p1
 
 mkdir build && cd build
 
