@@ -42,9 +42,9 @@ RUN ${APT_INSTALL} golang-${GOLANG_VER}
 ARG CLANG_VER=11
 RUN ${APT_INSTALL} clang-${CLANG_VER}
 
-RUN wget -nv https://commondatastorage.googleapis.com/chromium-boringssl-fips/boringssl-853ca1ea1168dff08011e5d42d94609cc0ca2e27.tar.xz
-RUN [ "$(sha256sum boringssl-853ca1ea1168dff08011e5d42d94609cc0ca2e27.tar.xz | awk '{print $1}')" = \
-        a4d069ccef6f3c7bc0c68de82b91414f05cb817494cd1ab483dcf3368883c7c2 ]
+RUN wget -nv https://github.com/google/boringssl/archive/7f02881e96e51f1873afcf384d02f782b48967ca.zip
+RUN [ "$(sha256sum 7f02881e96e51f1873afcf384d02f782b48967ca.zip | awk '{print $1}')" = \
+        f4384140ca2f33f7897ab471e5348ad6f71fa462968b4cca628381e2bf070710 ]
 
 ENV PATH=${PATH}:/usr/lib/go-${GOLANG_VER}/bin/
 

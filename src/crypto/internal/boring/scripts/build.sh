@@ -16,7 +16,9 @@ date
 # Following https://csrc.nist.gov/CSRC/media/projects/cryptographic-module-validation-program/documents/security-policies/140sp3678.pdf page 19.
 # !! Needs updated module & policy !!
 
-tar xJf boringssl-*z
+unzip *.zip
+
+mv boringssl-7f* boringssl
 
 cd boringssl
 
