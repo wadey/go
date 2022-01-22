@@ -22,6 +22,11 @@ mv boringssl-7f* boringssl
 
 cd boringssl
 
+for p in ../patches/*.patch
+do
+	patch -p1 <"$p"
+done
+
 mkdir build && cd build
 
 cmake -GNinja -DFIPS=1 -DCMAKE_BUILD_TYPE=Release ..

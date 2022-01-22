@@ -34,7 +34,7 @@ ENV ARCH=${TARGETARCH}
 RUN apt-get update && apt-get -y upgrade
 
 ENV APT_INSTALL="apt-get --no-install-recommends -y install"
-RUN ${APT_INSTALL} cmake xz-utils wget unzip ca-certificates ninja-build
+RUN ${APT_INSTALL} cmake xz-utils wget unzip ca-certificates ninja-build patch
 
 ARG GOLANG_VER=1.16
 RUN ${APT_INSTALL} golang-${GOLANG_VER}
@@ -57,6 +57,8 @@ ENV CXX="/usr/bin/clang++-${CLANG_VER}"
 # Undefine __ELF__ for boringssl/crypto/mem.c, avoid weak symbols for go use.
 ENV CFLAGS="-fPIC -U__ELF__"
 ENV CXXFLAGS="${CFLAGS}"
+
+ADD patches patches
 
 ADD scripts/build.sh scripts/build.sh
 RUN scripts/build.sh

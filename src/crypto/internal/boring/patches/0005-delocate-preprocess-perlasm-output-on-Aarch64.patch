@@ -1,0 +1,71 @@
+From f8f35c95550e6796ab8b2c0f8e37e7ce4bc67302 Mon Sep 17 00:00:00 2001
+From: Adam Langley <alangley@gmail.com>
+Date: Tue, 22 Dec 2020 13:45:55 -0800
+Subject: [PATCH] delocate: preprocess perlasm output on Aarch64
+
+Aarch64 perlasm outputs need to be run via the C preprocessor before
+being parsed by delocate.
+
+Change-Id: Ie420388e0e1707cb064d696ee8f87728cab9a36e
+Reviewed-on: https://boringssl-review.googlesource.com/c/boringssl/+/44847
+Reviewed-by: David Benjamin <davidben@google.com>
+Commit-Queue: Adam Langley <agl@google.com>
+---
+ crypto/fipsmodule/CMakeLists.txt | 27 +++++++++++++++++++++++++--
+ 1 file changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/crypto/fipsmodule/CMakeLists.txt b/crypto/fipsmodule/CMakeLists.txt
+index a675fbdd5..b74d50c86 100644
+--- a/crypto/fipsmodule/CMakeLists.txt
++++ b/crypto/fipsmodule/CMakeLists.txt
+@@ -124,6 +124,17 @@ perlasm(x86_64-mont5.${ASM_EXT} bn/asm/x86_64-mont5.pl)
+ perlasm(x86_64-mont.${ASM_EXT} bn/asm/x86_64-mont.pl)
+ perlasm(x86-mont.${ASM_EXT} bn/asm/x86-mont.pl)
+ 
++function(cpreprocess dest src)
++  add_custom_command(
++    OUTPUT ${dest}
++    COMMAND cpp ${src} -I${PROJECT_SOURCE_DIR}/include > ${dest}
++    DEPENDS
++    ${src}
++    ${PROJECT_SOURCE_DIR}/include/openssl/arm_arch.h
++    WORKING_DIRECTORY .
++  )
++endfunction()
++
+ if(FIPS_DELOCATE)
+   if(FIPS_SHARED)
+     error("Can't set both delocate and shared mode for FIPS build")
+@@ -144,6 +155,18 @@ if(FIPS_DELOCATE)
+     bcm.c
+   )
+ 
++  if(${ARCH} STREQUAL "aarch64")
++    # Perlasm output on Aarch64 needs to pass through the C preprocessor before
++    # it can be parsed by delocate.
++    foreach(asm ${BCM_ASM_SOURCES})
++      cpreprocess(${asm}.s ${asm})
++      list(APPEND BCM_ASM_PROCESSED_SOURCES "${asm}.s")
++    endforeach()
++  else()
++    # No preprocessing is required on other platforms.
++    set(BCM_ASM_PROCESSED_SOURCES ${BCM_ASM_SOURCES})
++  endif()
++
+   add_dependencies(bcm_c_generated_asm global_target)
+ 
+   set_target_properties(bcm_c_generated_asm PROPERTIES COMPILE_OPTIONS "-S")
+@@ -152,8 +175,8 @@ if(FIPS_DELOCATE)
+   go_executable(delocate boringssl.googlesource.com/boringssl/util/fipstools/delocate)
+   add_custom_command(
+     OUTPUT bcm-delocated.S
+-    COMMAND ./delocate -a $<TARGET_FILE:bcm_c_generated_asm> -o bcm-delocated.S ${BCM_ASM_SOURCES}
+-    DEPENDS bcm_c_generated_asm delocate ${BCM_ASM_SOURCES}
++    COMMAND ./delocate -a $<TARGET_FILE:bcm_c_generated_asm> -o bcm-delocated.S ${BCM_ASM_PROCESSED_SOURCES}
++    DEPENDS bcm_c_generated_asm delocate ${BCM_ASM_PROCESSED_SOURCES}
+     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+   )
+ 
+-- 
+2.34.1
+

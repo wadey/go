@@ -1,0 +1,32 @@
+From c42baf84dfa43fc5a708aa83ad829b925ad3c2ca Mon Sep 17 00:00:00 2001
+From: Adam Langley <alangley@gmail.com>
+Date: Tue, 22 Dec 2020 14:30:37 -0800
+Subject: [PATCH] delocate: eliminate expression from vpaes assembly.
+
+This change eliminates an Aarch64 assembly pattern that only appears
+in this case. It's easier to change this code than to pile more things
+on top of the delocate parser.
+
+Change-Id: I6bbbe9df744ec2ad4178d74456d8f4fecc3a2dae
+Reviewed-on: https://boringssl-review.googlesource.com/c/boringssl/+/44845
+Reviewed-by: David Benjamin <davidben@google.com>
+---
+ crypto/fipsmodule/aes/asm/vpaes-armv8.pl | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/crypto/fipsmodule/aes/asm/vpaes-armv8.pl b/crypto/fipsmodule/aes/asm/vpaes-armv8.pl
+index e4b9cebd1..b771fafac 100755
+--- a/crypto/fipsmodule/aes/asm/vpaes-armv8.pl
++++ b/crypto/fipsmodule/aes/asm/vpaes-armv8.pl
+@@ -1059,7 +1059,7 @@ _vpaes_schedule_mangle:
+ 
+ .Lschedule_mangle_both:
+ 	tbl	v3.16b, {v3.16b}, v1.16b	// vpshufb	%xmm1,	%xmm3,	%xmm3
+-	add	x8, x8, #64-16			// add	\$-16,	%r8
++	add	x8, x8, #48			// add	\$-16,	%r8
+ 	and	x8, x8, #~(1<<6)		// and	\$0x30,	%r8
+ 	st1	{v3.2d}, [$out]			// vmovdqu	%xmm3,	(%rdx)
+ 	ret
+-- 
+2.34.1
+

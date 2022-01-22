@@ -1,0 +1,263 @@
+From 1c919724d3f887b184f5194a8709c8ae652e4b7f Mon Sep 17 00:00:00 2001
+From: David Benjamin <davidben@google.com>
+Date: Wed, 27 Jan 2021 16:35:25 -0500
+Subject: [PATCH] Support MOVLPS and MOVHPS in delocate.
+
+GCC 10.2.1 seems to be emitting code like this:
+
+    movq    gcm_gmult_clmul@GOTPCREL(%rip), %xmm0
+    movhps  gcm_ghash_clmul@GOTPCREL(%rip), %xmm0
+    movaps  %xmm0, (%rsp)
+
+This is assembling a pair of function pointers in %xmm0 and writing the
+two out together. I've not observed the compiler output movlps, but
+supporting movhps and movlps are about as tricky. The main complication
+is that these instructions preserve the unwritten half of the
+destination, and they do not support register sources, only memory.
+
+This CL supports them by loading in a general-purpose register as we
+usually do, pushing the register on the stack, and then running the
+instruction on (%rsp). Some alternatives I considered:
+
+- Save/restore a temporary XMM register and then use MOVHLPS and
+  MOVLHPS. This would work but require another saveRegister-like
+  wrapper.
+
+- Take advantage of loadFromGOT ending in a memory mov and swap out
+  the final instruction. This would be more efficient, but we downgrade
+  GOT-based accesses to local symbols to a plain LEA. The compiler will
+  only do this when we write a pair of function pointers in a row, so
+  trying to optimize the non-local symbols seems not worth the trouble.
+  (Really the compiler should not be emitting GOT-relative loads at all,
+  but the compiler doesn't know these symbols will be private and in the
+  same module, so it has a habit of pessimally using GOT-based loads.)
+
+This option seemed the simplest.
+
+Change-Id: I8c4915a6a0d72aa4c5f4d581081b99b3a6ab64c2
+Reviewed-on: https://boringssl-review.googlesource.com/c/boringssl/+/45244
+Reviewed-by: Adam Langley <agl@google.com>
+---
+ util/fipstools/delocate/delocate.go           | 32 +++++++
+ .../delocate/testdata/x86_64-GOTRewrite/in.s  | 18 ++++
+ .../delocate/testdata/x86_64-GOTRewrite/out.s | 91 +++++++++++++++++++
+ 3 files changed, 141 insertions(+)
+
+diff --git a/util/fipstools/delocate/delocate.go b/util/fipstools/delocate/delocate.go
+index dc34c6883..2d92520dc 100644
+--- a/util/fipstools/delocate/delocate.go
++++ b/util/fipstools/delocate/delocate.go
+@@ -1083,6 +1083,10 @@ const (
+ 	// instrCombine merges the source and destination in some fashion, for example
+ 	// a 2-operand bitwise operation.
+ 	instrCombine
++	// instrMemoryVectorCombine is similer to instrCombine, but the source
++	// register must be a memory reference and the destination register
++	// must be a vector register.
++	instrMemoryVectorCombine
+ 	// instrThreeArg merges two sources into a destination in some fashion.
+ 	instrThreeArg
+ 	// instrCompare takes two arguments and writes outputs to the flags register.
+@@ -1131,6 +1135,11 @@ func classifyInstruction(instr string, args []*node32) instructionType {
+ 		if len(args) == 2 {
+ 			return instrTransformingMove
+ 		}
++
++	case "movlps", "movhps":
++		if len(args) == 2 {
++			return instrMemoryVectorCombine
++		}
+ 	}
+ 
+ 	return instrOther
+@@ -1242,6 +1251,18 @@ func threeArgCombineOp(w stringWriter, instructionName, source1, source2, dest s
+ 	}
+ }
+ 
++func memoryVectorCombineOp(w stringWriter, instructionName, source, dest string) wrapperFunc {
++	return func(k func()) {
++		k()
++		// These instructions can only read from memory, so push
++		// tempReg and read from the stack. Note we assume the red zone
++		// was previously cleared by saveRegister().
++		w.WriteString("\tpushq " + source + "\n")
++		w.WriteString("\t" + instructionName + " (%rsp), " + dest + "\n")
++		w.WriteString("\tleaq 8(%rsp), %rsp\n")
++	}
++}
++
+ func isValidLEATarget(reg string) bool {
+ 	return !strings.HasPrefix(reg, "%xmm") && !strings.HasPrefix(reg, "%ymm") && !strings.HasPrefix(reg, "%zmm")
+ }
+@@ -1416,6 +1437,17 @@ Args:
+ 
+ 					wrappers = append(wrappers, combineOp(d.output, instructionName, tempReg, targetReg))
+ 					targetReg = tempReg
++				case instrMemoryVectorCombine:
++					assertNodeType(argNodes[1], ruleRegisterOrConstant)
++					targetReg = d.contents(argNodes[1])
++					if isValidLEATarget(targetReg) {
++						return nil, errors.New("target register must be an XMM register")
++					}
++					saveRegWrapper, tempReg := saveRegister(d.output, nil)
++					wrappers = append(wrappers, saveRegWrapper)
++					redzoneCleared = true
++					wrappers = append(wrappers, memoryVectorCombineOp(d.output, instructionName, tempReg, targetReg))
++					targetReg = tempReg
+ 				case instrThreeArg:
+ 					if n := len(argNodes); n != 3 {
+ 						return nil, fmt.Errorf("three-argument instruction has %d arguments", n)
+diff --git a/util/fipstools/delocate/testdata/x86_64-GOTRewrite/in.s b/util/fipstools/delocate/testdata/x86_64-GOTRewrite/in.s
+index 398032f84..a00a69147 100644
+--- a/util/fipstools/delocate/testdata/x86_64-GOTRewrite/in.s
++++ b/util/fipstools/delocate/testdata/x86_64-GOTRewrite/in.s
+@@ -1,5 +1,6 @@
+ 	.text
+ foo:
++bar:
+ 	# leaq of OPENSSL_ia32cap_P is supported.
+ 	leaq OPENSSL_ia32cap_P(%rip), %r11
+ 
+@@ -44,6 +45,23 @@ foo:
+ 	vpbroadcastq stderr@GOTPCREL(%rip), %xmm0
+ 	vpbroadcastq foo@GOTPCREL(%rip), %xmm0
+ 
++	# GCC sometimes loads a pair of pointers into an XMM register and
++	# writes them together.
++	movq gcm_gmult_clmul@GOTPCREL(%rip), %xmm0
++	movhps gcm_ghash_clmul@GOTPCREL(%rip), %xmm0
++	movaps %xmm0, (%rsp)
++
++	# We've yet to observe this, but the above could also have been written
++	# with movlps.
++	movhps gcm_ghash_clmul@GOTPCREL(%rip), %xmm0
++	movlps gcm_gmult_clmul@GOTPCREL(%rip), %xmm0
++	movaps %xmm0, (%rsp)
++
++	# Same as above, but with a local symbol.
++	movhps foo@GOTPCREL(%rip), %xmm0
++	movlps bar@GOTPCREL(%rip), %xmm0
++	movaps %xmm0, (%rsp)
++
+ 	cmpq foo@GOTPCREL(%rip), %rax
+ 	cmpq %rax, foo@GOTPCREL(%rip)
+ 
+diff --git a/util/fipstools/delocate/testdata/x86_64-GOTRewrite/out.s b/util/fipstools/delocate/testdata/x86_64-GOTRewrite/out.s
+index e14a71e60..467db65b4 100644
+--- a/util/fipstools/delocate/testdata/x86_64-GOTRewrite/out.s
++++ b/util/fipstools/delocate/testdata/x86_64-GOTRewrite/out.s
+@@ -5,6 +5,8 @@ BORINGSSL_bcm_text_start:
+ 	.text
+ .Lfoo_local_target:
+ foo:
++.Lbar_local_target:
++bar:
+ 	# leaq of OPENSSL_ia32cap_P is supported.
+ # WAS leaq OPENSSL_ia32cap_P(%rip), %r11
+ 	leaq -128(%rsp), %rsp
+@@ -172,6 +174,85 @@ foo:
+ 	leaq 128(%rsp), %rsp
+ 	vpbroadcastq %xmm0, %xmm0
+ 
++	# GCC sometimes loads a pair of pointers into an XMM register and
++	# writes them together.
++# WAS movq gcm_gmult_clmul@GOTPCREL(%rip), %xmm0
++	leaq -128(%rsp), %rsp
++	pushq %rax
++	pushf
++	leaq gcm_gmult_clmul_GOTPCREL_external(%rip), %rax
++	addq (%rax), %rax
++	movq (%rax), %rax
++	popf
++	movq %rax, %xmm0
++	popq %rax
++	leaq 128(%rsp), %rsp
++# WAS movhps gcm_ghash_clmul@GOTPCREL(%rip), %xmm0
++	leaq -128(%rsp), %rsp
++	pushq %rax
++	pushf
++	leaq gcm_ghash_clmul_GOTPCREL_external(%rip), %rax
++	addq (%rax), %rax
++	movq (%rax), %rax
++	popf
++	pushq %rax
++	movhps (%rsp), %xmm0
++	leaq 8(%rsp), %rsp
++	popq %rax
++	leaq 128(%rsp), %rsp
++	movaps %xmm0, (%rsp)
++
++	# We've yet to observe this, but the above could also have been written
++	# with movlps.
++# WAS movhps gcm_ghash_clmul@GOTPCREL(%rip), %xmm0
++	leaq -128(%rsp), %rsp
++	pushq %rax
++	pushf
++	leaq gcm_ghash_clmul_GOTPCREL_external(%rip), %rax
++	addq (%rax), %rax
++	movq (%rax), %rax
++	popf
++	pushq %rax
++	movhps (%rsp), %xmm0
++	leaq 8(%rsp), %rsp
++	popq %rax
++	leaq 128(%rsp), %rsp
++# WAS movlps gcm_gmult_clmul@GOTPCREL(%rip), %xmm0
++	leaq -128(%rsp), %rsp
++	pushq %rax
++	pushf
++	leaq gcm_gmult_clmul_GOTPCREL_external(%rip), %rax
++	addq (%rax), %rax
++	movq (%rax), %rax
++	popf
++	pushq %rax
++	movlps (%rsp), %xmm0
++	leaq 8(%rsp), %rsp
++	popq %rax
++	leaq 128(%rsp), %rsp
++	movaps %xmm0, (%rsp)
++
++	# Same as above, but with a local symbol.
++# WAS movhps foo@GOTPCREL(%rip), %xmm0
++	leaq -128(%rsp), %rsp
++	pushq %rax
++	leaq	.Lfoo_local_target(%rip), %rax
++	pushq %rax
++	movhps (%rsp), %xmm0
++	leaq 8(%rsp), %rsp
++	popq %rax
++	leaq 128(%rsp), %rsp
++# WAS movlps bar@GOTPCREL(%rip), %xmm0
++	leaq -128(%rsp), %rsp
++	pushq %rax
++	leaq	.Lbar_local_target(%rip), %rax
++	pushq %rax
++	movlps (%rsp), %xmm0
++	leaq 8(%rsp), %rsp
++	popq %rax
++	leaq 128(%rsp), %rsp
++	movaps %xmm0, (%rsp)
++
+ # WAS cmpq foo@GOTPCREL(%rip), %rax
+ 	leaq -128(%rsp), %rsp
+ 	pushq %rbx
+@@ -195,6 +276,16 @@ BORINGSSL_bcm_text_end:
+ foobar_bss_get:
+ 	leaq	foobar(%rip), %rax
+ 	ret
++.type gcm_ghash_clmul_GOTPCREL_external, @object
++.size gcm_ghash_clmul_GOTPCREL_external, 8
++gcm_ghash_clmul_GOTPCREL_external:
++	.long gcm_ghash_clmul@GOTPCREL
++	.long 0
++.type gcm_gmult_clmul_GOTPCREL_external, @object
++.size gcm_gmult_clmul_GOTPCREL_external, 8
++gcm_gmult_clmul_GOTPCREL_external:
++	.long gcm_gmult_clmul@GOTPCREL
++	.long 0
+ .type stderr_GOTPCREL_external, @object
+ .size stderr_GOTPCREL_external, 8
+ stderr_GOTPCREL_external:
+-- 
+2.34.1
+

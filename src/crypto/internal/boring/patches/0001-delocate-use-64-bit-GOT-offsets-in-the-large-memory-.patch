@@ -1,0 +1,98 @@
+From 56308910f38a7e558205eccda134bc6e2215fb7e Mon Sep 17 00:00:00 2001
+From: Adam Langley <alangley@gmail.com>
+Date: Thu, 13 Aug 2020 15:07:00 -0700
+Subject: [PATCH] delocate: use 64-bit GOT offsets in the large memory model.
+
+I tried to save space and use 32-bit GOT offsets since a GOT > 2GiB is
+crazy. However, Clang's linker emits 64-bit relocations even for .long,
+thus the four bytes following each offset get stomped. It mostly works
+because the relocations are applied in order, thus the following
+relocation gets stomped but is then processed and fixed. But there's
+four bytes of stomp at the end which hits the module integrity hash,
+which is fatal.
+
+This could be fixed by adding four bytes of padding after the list of
+offsets, but that's piling a hack on a hack. So this change just
+switches to 64-bit offsets.
+
+Change-Id: I227eec67c481d93a414fbed19aa99471f9df0f0e
+Reviewed-on: https://boringssl-review.googlesource.com/c/boringssl/+/42484
+Commit-Queue: David Benjamin <davidben@google.com>
+Reviewed-by: David Benjamin <davidben@google.com>
+---
+ util/fipstools/delocate/delocate.go                | 14 ++++++--------
+ .../delocate/testdata/x86_64-LargeMemory/out.s     |  8 ++++----
+ 2 files changed, 10 insertions(+), 12 deletions(-)
+
+diff --git a/util/fipstools/delocate/delocate.go b/util/fipstools/delocate/delocate.go
+index 05d591193..200a8388e 100644
+--- a/util/fipstools/delocate/delocate.go
++++ b/util/fipstools/delocate/delocate.go
+@@ -1271,12 +1271,10 @@ Args:
+ 			changed = true
+ 
+ 			wrappers = append(wrappers, func(k func()) {
+-				// While the compiler output supports 64-bit offsets in the GOT,
+-				// https://refspecs.linuxbase.org/elf/x86_64-abi-0.98.pdf page 70, footnote
+-				// 3 says that the GOT is limited to 32 bits. It's not clear about
+-				// signed/unsigned but a GOT with more than 2^31 entries seems implausible
+-				// so we save the extra space.
+-				d.output.WriteString(fmt.Sprintf("\tmovsl .Lboringssl_%s_%s(%%rip), %s\n", prefix, symbol, targetReg))
++				// Even if one tries to use 32-bit GOT offsets, Clang's linker (at the time
++				// of writing) emits 64-bit relocations anyway, so the following four bytes
++				// get stomped. Thus we use 64-bit offsets.
++				d.output.WriteString(fmt.Sprintf("\tmovq .Lboringssl_%s_%s(%%rip), %s\n", prefix, symbol, targetReg))
+ 			})
+ 
+ 		default:
+@@ -1573,11 +1571,11 @@ func transform(w stringWriter, inputs []inputFile) error {
+ 
+ 		for _, name := range sortedSet(d.gotOffsetsNeeded) {
+ 			w.WriteString(".Lboringssl_got_" + name + ":\n")
+-			w.WriteString("\t.long " + name + "@GOT\n")
++			w.WriteString("\t.quad " + name + "@GOT\n")
+ 		}
+ 		for _, name := range sortedSet(d.gotOffOffsetsNeeded) {
+ 			w.WriteString(".Lboringssl_gotoff_" + name + ":\n")
+-			w.WriteString("\t.long " + name + "@GOTOFF\n")
++			w.WriteString("\t.quad " + name + "@GOTOFF\n")
+ 		}
+ 	}
+ 
+diff --git a/util/fipstools/delocate/testdata/x86_64-LargeMemory/out.s b/util/fipstools/delocate/testdata/x86_64-LargeMemory/out.s
+index 9000b010a..d4534f8a0 100644
+--- a/util/fipstools/delocate/testdata/x86_64-LargeMemory/out.s
++++ b/util/fipstools/delocate/testdata/x86_64-LargeMemory/out.s
+@@ -13,7 +13,7 @@ BORINGSSL_bcm_text_start:
+ 	addq $.Lboringssl_got_delta-.L0, %rcx
+         addq    %rax, %rcx
+ # WAS movabsq $_Z1gv@GOTOFF, %rax
+-	movsl .Lboringssl_gotoff__Z1gv(%rip), %rax
++	movq .Lboringssl_gotoff__Z1gv(%rip), %rax
+         addq    %rcx, %rax
+         jmpq    *%rax
+ 
+@@ -27,7 +27,7 @@ BORINGSSL_bcm_text_start:
+ 	addq $.Lboringssl_got_delta-.L0$pb, %rcx
+         addq    %rax, %rcx
+ # WAS movabsq $h@GOT, %rax
+-	movsl .Lboringssl_got_h(%rip), %rax
++	movq .Lboringssl_got_h(%rip), %rax
+         movq    (%rcx,%rax), %rax
+         movl    (%rax), %eax
+         retq
+@@ -55,9 +55,9 @@ OPENSSL_ia32cap_addr_delta:
+ .Lboringssl_got_delta:
+ 	.quad _GLOBAL_OFFSET_TABLE_-.Lboringssl_got_delta
+ .Lboringssl_got_h:
+-	.long h@GOT
++	.quad h@GOT
+ .Lboringssl_gotoff__Z1gv:
+-	.long _Z1gv@GOTOFF
++	.quad _Z1gv@GOTOFF
+ .type BORINGSSL_bcm_text_hash, @object
+ .size BORINGSSL_bcm_text_hash, 64
+ BORINGSSL_bcm_text_hash:
+-- 
+2.34.1
+
