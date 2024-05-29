@@ -16,6 +16,7 @@ import "C"
 import (
 	"crypto/internal/boring/sig"
 	_ "crypto/internal/boring/syso"
+	"errors"
 	"math/bits"
 	"unsafe"
 )
@@ -54,9 +55,17 @@ func UnreachableExceptTests() {
 	}
 }
 
-type fail string
+func fail(e string) error {
+	packedErr := C._goboringcrypto_ERR_get_error()
+	if packedErr != 0 {
+		buf := [512]C.char{}
+		res := C._goboringcrypto_ERR_error_string_n(packedErr, &buf[0], 512)
 
-func (e fail) Error() string { return "boringcrypto: " + string(e) + " failed" }
+		return errors.New("boringcrypto: " + e + " failed: " + C.GoString(res))
+	} else {
+		return errors.New("boringcrypto: " + e + " failed")
+	}
+}
 
 func wbase(b BigInt) *C.uint8_t {
 	if len(b) == 0 {

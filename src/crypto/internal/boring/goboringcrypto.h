@@ -26,6 +26,10 @@
 // once explicitly and once as a constructor, but that's OK.)
 /*unchecked*/ void _goboringcrypto_BORINGSSL_bcm_power_on_self_test(void);
 
+// #include <openssl/err.h>
+uint32_t _goboringcrypto_ERR_get_error(void);
+char* _goboringcrypto_ERR_error_string_n(uint32_t, char*, size_t);
+
 // #include <openssl/crypto.h>
 int _goboringcrypto_FIPS_mode(void);
 void* _goboringcrypto_OPENSSL_malloc(size_t);
